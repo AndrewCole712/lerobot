@@ -128,7 +128,7 @@ def predict_action(observation, policy, device, use_amp):
     return action
 
 
-def init_keyboard_listener():
+def init_keyboard_listener(dagger_mode=False):
     # Allow to exit early while recording an episode or resetting the environment,
     # by tapping the right arrow key '->'. This might require a sudo permission
     # to allow your terminal to monitor keyboard events.
@@ -136,6 +136,14 @@ def init_keyboard_listener():
     events["exit_early"] = False
     events["rerecord_episode"] = False
     events["stop_recording"] = False
+
+    # ---DAgger implementation---
+    if dagger_mode:
+    # add keys to allow switching between teleop and policy control during rollout
+        events["teleoperation"] = False
+        events["policy"] = True # start rollout with policy control
+
+    # ---DAgger implementation end---
 
     if is_headless():
         logging.warning(
@@ -160,6 +168,23 @@ def init_keyboard_listener():
                 print("Escape key pressed. Stopping data recording...")
                 events["stop_recording"] = True
                 events["exit_early"] = True
+
+            # ---DAgger mode control keys---
+            if dagger_mode:
+                if key == keyboard.KeyCode.from_char('t'):
+                    # if we're not already in teleop mode
+                    if not events["teleoperation"]:
+                        print("Switching to teleoperation. Please assume control of the leader arm")
+                        events["teleoperation"] = True
+                        events["policy"] = False
+                elif key == keyboard.KeyCode.from_char('p'):
+                    # if we're in teleop mode
+                    if events["teleoperation"]:
+                        print("Switching to policy control. Please release control of leader arm")
+                        events["teleoperation"] = False
+                        events["policy"] = True
+            # ---END DAgger mode control keys
+
         except Exception as e:
             print(f"Error handling key press: {e}")
 

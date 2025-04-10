@@ -442,6 +442,7 @@ class ManipulatorRobot:
             self.follower_arms[name].write("Maximum_Acceleration", 254)
             self.follower_arms[name].write("Acceleration", 254)
 
+
     def teleop_step(
         self, record_data=False
     ) -> None | tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
@@ -561,7 +562,7 @@ class ManipulatorRobot:
             obs_dict[f"observation.images.{name}"] = images[name]
         return obs_dict
 
-    def send_action(self, action: torch.Tensor) -> torch.Tensor:
+    def send_action(self, action: torch.Tensor, mirror_to_leader: bool = False) -> torch.Tensor:
         """Command the follower arms to move to a target joint configuration.
 
         The relative action magnitude may be clipped depending on the configuration parameter
@@ -598,6 +599,28 @@ class ManipulatorRobot:
             # Send goal position to each follower
             goal_pos = goal_pos.numpy().astype(np.float32)
             self.follower_arms[name].write("Goal_Position", goal_pos)
+                                           
+            # ---DAgger addition---
+
+            # confirm we're using dagger. Default is set to false so that using the replay and record
+            # functions as originally implemented will be unchanged 
+            if mirror_to_leader == True:
+
+                # mirror actions to leader arm 
+                for leader_name in self.leader_arms:
+                
+                    # enable torque if needed
+                    from lerobot.common.robot_devices.motors.feetech import TorqueMode
+                    leader_torque = self.leader_arms[leader_name].read("Torque_Enable")
+
+                    # check if enabled, and enable if not
+                    if (leader_torque == TorqueMode.DISABLED.value).any():
+                        self.leader_arms[leader_name].write("Torque_Enable", TorqueMode.ENABLED.value)
+                    
+                    # send goal position to the leader arm
+                    self.leader_arms[leader_name].write("Goal_Position", goal_pos)
+
+            # ---DAgger addition end--- 
 
         return torch.cat(action_sent)
 
