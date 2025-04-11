@@ -450,10 +450,17 @@ class ManipulatorRobot:
             raise RobotDeviceNotConnectedError(
                 "ManipulatorRobot is not connected. You need to run `robot.connect()`."
             )
-
+        from lerobot.common.robot_devices.motors.feetech import TorqueMode
+        
         # Prepare to assign the position of the leader to the follower
         leader_pos = {}
         for name in self.leader_arms:
+            # now that the gears have been reinstalled into the leader arn servos
+            # we need to ensure torque is disabled for teleoperation
+            leader_torque = self.leader_arms[name].read("Torque_Enable")
+            # check if enabled, and enable if not
+            if (leader_torque == TorqueMode.ENABLED.value).any():
+                self.leader_arms[name].write("Torque_Enable", TorqueMode.DISABLED.value)
             before_lread_t = time.perf_counter()
             leader_pos[name] = self.leader_arms[name].read("Present_Position")
             leader_pos[name] = torch.from_numpy(leader_pos[name])

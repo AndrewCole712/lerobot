@@ -117,15 +117,6 @@ class ReplayControlConfig(ControlConfig):
 @ControlConfig.register_subclass("DAgger")
 @dataclass
 class DAggerControlConfig(ControlConfig):
-    # ---DAgger specific implementations---
-    # Flag for send_actions, to make sure leader arm is mirroring follower arm. This ensures smooth teleop
-    # takeover by user during policy rollout
-    mirror_to_leader: bool = True
-    # delay switch by a few seconds to allow the user to position for teleop
-    control_switch_delay_s: int = 5
-    # default to start in policy control 
-    start_in_policy_mode: bool = True
-    # ---end DAgger specific implementations
 
     # the following is the same as record subclass
     # Dataset identifier. By convention it should match '{hf_username}/{dataset_name}' (e.g. `lerobot/test`).
@@ -168,6 +159,16 @@ class DAggerControlConfig(ControlConfig):
     play_sounds: bool = True
     # Resume recording on an existing dataset.
     resume: bool = False
+
+    # ---DAgger specific implementations---
+    # Flag for send_actions, to make sure leader arm is mirroring follower arm. This ensures smooth teleop
+    # takeover by user during policy rollout
+    mirror_to_leader: bool = True
+    # delay switch by a few seconds to allow the user to position for teleop
+    control_switch_delay_s: int = 5
+    # default to start in policy control 
+    start_in_policy_mode: bool = True
+    # ---end DAgger specific implementations
 
     def __post_init__(self):
         # HACK: We parse again the cli args here to get the pretrained path if there was one.

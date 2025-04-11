@@ -221,7 +221,11 @@ def record_episode(
     policy,
     fps,
     single_task,
-):
+    # create ability to enable dagger mode, with default to False
+    dagger_mode,
+    mirror_to_leader,
+    control_switch_delay_s
+    ):
     control_loop(
         robot=robot,
         control_time_s=episode_time_s,
@@ -232,8 +236,12 @@ def record_episode(
         fps=fps,
         teleoperate=policy is None,
         single_task=single_task,
-    )
-
+        # set dagger mode in the control loop
+        dagger_mode=dagger_mode,
+        mirror_to_leader = mirror_to_leader,
+        control_switch_delay_s=control_switch_delay_s
+        )
+    
 
 @safe_stop_image_writer
 def control_loop(
@@ -246,6 +254,9 @@ def control_loop(
     policy: PreTrainedPolicy = None,
     fps: int | None = None,
     single_task: str | None = None,
+    dagger_mode: bool = False, # enable dagger mode in the control loop
+    mirror_to_leader: bool = False,
+    control_switch_delay_s: int = 0
 ):
     # TODO(rcadene): Add option to record logs
     if not robot.is_connected:
@@ -266,24 +277,78 @@ def control_loop(
     if dataset is not None and fps is not None and dataset.fps != fps:
         raise ValueError(f"The dataset fps should be equal to requested fps ({dataset['fps']} != {fps}).")
 
+   
+    if dagger_mode:
+        prev_teleop_state = events["teleoperation"]
+        mode_switching = False
+        switch_start_time = 0
+        target_mode = None  # Will track which mode we're switching to
+
     timestamp = 0
     start_episode_t = time.perf_counter()
     while timestamp < control_time_s:
         start_loop_t = time.perf_counter()
 
-        if teleoperate:
-            observation, action = robot.teleop_step(record_data=True)
-        else:
-            observation = robot.capture_observation()
+        # Handle DAgger mode switching with delay
+        if dagger_mode and control_switch_delay_s > 0:
+            current_teleop_state = events["teleoperation"]
+            
+            # Detect mode switch requests
+            if current_teleop_state != prev_teleop_state and not mode_switching:
+                # Mode switch just requested
+                mode_switching = True
+                switch_start_time = time.perf_counter()
+                target_mode = "teleop" if current_teleop_state else "policy"
+                print(f"Switching to {target_mode} in {control_switch_delay_s} seconds...")
+                
+                # Keep using the previous mode during transition
+                events["teleoperation"] = prev_teleop_state
+                events["policy"] = not prev_teleop_state
+            
+            # Check if we're in transition and if delay has completed
+            if mode_switching:
+                elapsed_time = time.perf_counter() - switch_start_time
+                if elapsed_time >= control_switch_delay_s:
+                    # Transition complete, allow the mode switch
+                    mode_switching = False
+                    events["teleoperation"] = (target_mode == "teleop")
+                    events["policy"] = not (target_mode == "teleop")  # Make sure these are always opposites
+                    print(f"Transition complete. Now in {target_mode} mode.")
+                    # Update prev_teleop_state to match the new state
+                    prev_teleop_state = events["teleoperation"]
+                else:
+                    # Still in transition, continue using previous mode
+                    events["teleoperation"] = prev_teleop_state
+                    events["policy"] = not prev_teleop_state
 
-            if policy is not None:
-                pred_action = predict_action(
-                    observation, policy, get_safe_torch_device(policy.config.device), policy.config.use_amp
-                )
-                # Action can eventually be clipped using `max_relative_target`,
-                # so action actually sent is saved in the dataset.
-                action = robot.send_action(pred_action)
-                action = {"action": action}
+        # Execute control based on current mode
+        if dagger_mode:
+            if events["teleoperation"]:
+                observation, action = robot.teleop_step(record_data=True)
+            elif events["policy"]: 
+                observation = robot.capture_observation()
+                if policy is not None: 
+                    pred_action = predict_action(
+                        observation, policy, get_safe_torch_device(policy.config.device), policy.config.use_amp
+                    )
+                    action = robot.send_action(pred_action, mirror_to_leader=mirror_to_leader)
+                    action = {"action": action}
+
+        else:
+
+            if teleoperate:
+                observation, action = robot.teleop_step(record_data=True)
+            else:
+                observation = robot.capture_observation()
+
+                if policy is not None:
+                    pred_action = predict_action(
+                        observation, policy, get_safe_torch_device(policy.config.device), policy.config.use_amp
+                    )
+                    # Action can eventually be clipped using `max_relative_target`,
+                    # so action actually sent is saved in the dataset.
+                    action = robot.send_action(pred_action)
+                    action = {"action": action}
 
         if dataset is not None:
             frame = {**observation, **action, "task": single_task}

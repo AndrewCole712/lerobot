@@ -152,6 +152,7 @@ from lerobot.common.robot_devices.control_configs import (
     RecordControlConfig,
     RemoteRobotConfig,
     ReplayControlConfig,
+    DAggerControlConfig,
     TeleoperateControlConfig,
 )
 from lerobot.common.robot_devices.control_utils import (
@@ -339,6 +340,119 @@ def record(
     log_say("Exiting", cfg.play_sounds)
     return dataset
 
+@safe_disconnect
+def dagger_record(
+    robot: Robot,
+    cfg: DAggerControlConfig,
+) -> LeRobotDataset:
+    # TODO(rcadene): Add option to record logs
+    if cfg.resume:
+        dataset = LeRobotDataset(
+            cfg.repo_id,
+            root=cfg.root,
+        )
+        if len(robot.cameras) > 0:
+            dataset.start_image_writer(
+                num_processes=cfg.num_image_writer_processes,
+                num_threads=cfg.num_image_writer_threads_per_camera * len(robot.cameras),
+            )
+        sanity_check_dataset_robot_compatibility(dataset, robot, cfg.fps, cfg.video)
+    else:
+        # Create empty dataset or load existing saved episodes
+        sanity_check_dataset_name(cfg.repo_id, cfg.policy)
+        dataset = LeRobotDataset.create(
+            cfg.repo_id,
+            cfg.fps,
+            root=cfg.root,
+            robot=robot,
+            use_videos=cfg.video,
+            image_writer_processes=cfg.num_image_writer_processes,
+            image_writer_threads=cfg.num_image_writer_threads_per_camera * len(robot.cameras),
+        )
+
+    # Load pretrained policy
+    policy = None if cfg.policy is None else make_policy(cfg.policy, ds_meta=dataset.meta)
+
+    if not robot.is_connected:
+        robot.connect()
+
+    # enable dagger mode to enable "t" and "p" keys for teleop toggling
+    listener, events = init_keyboard_listener(dagger_mode=True)
+
+    # Execute a few seconds without recording to:
+    # 1. teleoperate the robot to move it in starting position if no policy provided,
+    # 2. give times to the robot devices to connect and start synchronizing,
+    # 3. place the cameras windows on screen
+    enable_teleoperation = policy is None
+    log_say("Warmup record", cfg.play_sounds)
+    warmup_record(robot, events, enable_teleoperation, cfg.warmup_time_s, cfg.display_data, cfg.fps)
+
+    if has_method(robot, "teleop_safety_stop"):
+        robot.teleop_safety_stop()
+
+    recorded_episodes = 0
+
+    # ---DAgger implementation: initialize control modes---
+    # set initial control mode based on config file
+    events["teleoperation"] = not cfg.start_in_policy_mode
+    events["policy"] = cfg.start_in_policy_mode
+    # ---end DAgger implementation---
+
+    while True:
+        if recorded_episodes >= cfg.num_episodes:
+            break
+
+        log_say(f"Recording episode {dataset.num_episodes}", cfg.play_sounds)
+        record_episode(
+            robot=robot,
+            dataset=dataset,
+            events=events,
+            episode_time_s=cfg.episode_time_s,
+            display_data=cfg.display_data,
+            policy=policy,
+            fps=cfg.fps,
+            single_task=cfg.single_task,
+            # enable dagger mode, mirror to leader for send action, and control switch delay
+            dagger_mode=True,
+            mirror_to_leader=cfg.mirror_to_leader,
+            control_switch_delay_s = cfg.control_switch_delay_s
+        )
+
+        # Execute a few seconds without recording to give time to manually reset the environment
+        # Current code logic doesn't allow to teleoperate during this time.
+        # TODO(rcadene): add an option to enable teleoperation during reset
+        # Skip reset for the last episode to be recorded
+        if not events["stop_recording"] and (
+            (recorded_episodes < cfg.num_episodes - 1) or events["rerecord_episode"]
+        ):
+            log_say("Reset the environment", cfg.play_sounds)
+            print("Resetting the environment")
+            reset_environment(robot, events, cfg.reset_time_s, cfg.fps)
+            print("Environment reset")
+
+            
+        if events["rerecord_episode"]:
+            log_say("Re-record episode", cfg.play_sounds)
+            events["rerecord_episode"] = False
+            events["exit_early"] = False
+            dataset.clear_episode_buffer()
+            continue
+
+        dataset.save_episode()
+        recorded_episodes += 1
+
+        if events["stop_recording"]:
+            break
+
+    log_say("Stop recording", cfg.play_sounds, blocking=True)
+    stop_recording(robot, listener, cfg.display_data)
+
+    if cfg.push_to_hub:
+        dataset.push_to_hub(tags=cfg.tags, private=cfg.private)
+
+    log_say("Exiting", cfg.play_sounds)
+    return dataset
+
 
 @safe_disconnect
 def replay(
@@ -419,6 +533,9 @@ def control_robot(cfg: ControlPipelineConfig):
     elif isinstance(cfg.control, RecordControlConfig):
         _init_rerun(control_config=cfg.control, session_name="lerobot_control_loop_record")
         record(robot, cfg.control)
+    # DAgger control
+    elif isinstance(cfg.control, DAggerControlConfig):
+        dagger_record(robot, cfg.control)
     elif isinstance(cfg.control, ReplayControlConfig):
         replay(robot, cfg.control)
     elif isinstance(cfg.control, RemoteRobotConfig):
