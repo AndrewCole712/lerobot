@@ -222,9 +222,9 @@ def record_episode(
     fps,
     single_task,
     # create ability to enable dagger mode, with default to False
-    dagger_mode,
-    mirror_to_leader,
-    control_switch_delay_s
+    dagger_mode: bool=False, 
+    mirror_to_leader: bool=False,
+    control_switch_delay_s: int=2
     ):
     control_loop(
         robot=robot,
@@ -277,15 +277,20 @@ def control_loop(
     if dataset is not None and fps is not None and dataset.fps != fps:
         raise ValueError(f"The dataset fps should be equal to requested fps ({dataset['fps']} != {fps}).")
 
-   
+    # if we're in dagger mode, track the previous teleop state 
     if dagger_mode:
-        prev_teleop_state = events["teleoperation"]
+        prev_teleop_state = events["teleoperation"] # teleop state starts at False
         mode_switching = False
         switch_start_time = 0
         target_mode = None  # Will track which mode we're switching to
 
     timestamp = 0
     start_episode_t = time.perf_counter()
+
+    # make sure that we're reset to policy mode at the start of each dagger episode 
+    events["teleoperation"] = False
+    events["policy"] = True
+
     while timestamp < control_time_s:
         start_loop_t = time.perf_counter()
 
@@ -293,18 +298,17 @@ def control_loop(
         if dagger_mode and control_switch_delay_s > 0:
             current_teleop_state = events["teleoperation"]
             
-            # Detect mode switch requests
+            # Detect mode switch requests. If "t" or "p" are 
+            # pressed, then events[teleoperation] will change value
+            # and mode_switch is defualted is False
             if current_teleop_state != prev_teleop_state and not mode_switching:
-                # Mode switch just requested
+                # Mode switch requested, change flag to true
                 mode_switching = True
                 switch_start_time = time.perf_counter()
                 target_mode = "teleop" if current_teleop_state else "policy"
                 print(f"Switching to {target_mode} in {control_switch_delay_s} seconds...")
-                
-                # Keep using the previous mode during transition
-                events["teleoperation"] = prev_teleop_state
-                events["policy"] = not prev_teleop_state
-            
+
+
             # Check if we're in transition and if delay has completed
             if mode_switching:
                 elapsed_time = time.perf_counter() - switch_start_time
@@ -320,6 +324,7 @@ def control_loop(
                     # Still in transition, continue using previous mode
                     events["teleoperation"] = prev_teleop_state
                     events["policy"] = not prev_teleop_state
+
 
         # Execute control based on current mode
         if dagger_mode:
